@@ -48,7 +48,10 @@ public class BranchAndBound {
 		static int value2[][][][];
 		static int allMin[][];
 		static int rowMin[][][];
-		
+		List<String> valueList ;
+        static final int maxListSize = 10000000 ;
+        static int minGlobalUpperBound = 2000000000 ;
+        
 		public void setup(Context context) throws IOException, InterruptedException {
 			Configuration conf = context.getConfiguration() ;
 			// handle exception ?????
@@ -112,6 +115,7 @@ public class BranchAndBound {
 					}
 				}
 			}
+            List<String> valueList = new ArrayList<String>();
 			Counter cnt = context.getCounter("MyCounter", "nSetup");
 			cnt.increment(1);
 		}
@@ -234,16 +238,26 @@ public class BranchAndBound {
 				upperBound[i] = calcUpperBound(a, k, i);
 				globalUpperBound = Math.min(globalUpperBound, upperBound[i]);
 			}
-			a[0] = globalUpperBound;
+            minGlobalUpperBound = Math.min( globalUpperBound , minGlobalUpperBound ) ;
+			a[0] = minGlobalUpperBound;
 			for (int i = 0; i < c[k]; i ++)
-			if (lowerBound[i] <= globalUpperBound) {
+			if (lowerBound[i] <= minGlobalUpperBound) {
 				a[k + 3] = i;
 				a[1] = lowerBound[i];
 				a[2] = upperBound[i];
-				Counter cnt = context.getCounter("MyCounter", "lines");
-				int strID = (int)cnt.getValue() / 10000;
+//				int strID = (int)cnt.getValue() / 10000;
+//				context.write(new IntWritable(strID), new Text(strInfo));
 				String strInfo = getInfo(a);
-				context.write(new IntWritable(strID), new Text(strInfo));
+                if( valueList.size() == maxListSize ) {
+                    Counter cnt = context.getCounter("MyCounter", "listNum");
+                    int output_key = (int)cnt.getValue() ;
+                    for( String value: valueList ) {
+                        context.write( new IntWritable(output_key) , new Text(value) ) ;
+                    }
+                    valueList = new ArrayList<String>() ;
+                }
+                valueList.add(strInfo) ;
+				Counter cnt = context.getCounter("MyCounter", "lines");
 				cnt.increment(1);
 			}
 		}
@@ -252,7 +266,7 @@ public class BranchAndBound {
             
         }
 	}
-	
+/*
 	public static class BBMapper2 extends Mapper <Object, Text, IntWritable, Text> {
 		public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
 			Counter cnt = context.getCounter("MyCounter", "lines");
@@ -261,7 +275,7 @@ public class BranchAndBound {
 			cnt.increment(1);
 		}
 	}
-	
+*/
 	public static class BBReducer extends Reducer<IntWritable, Text, NullWritable, Text> {
 		static final int Infinity = 2000000000;
 		public void reduce(IntWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
@@ -298,7 +312,7 @@ public class BranchAndBound {
 			}
 		}
 	}
-	
+/*
 	static Job getJob(String input, String output, int iteration, int subIteration) throws Exception{
 		Configuration conf = new Configuration() ;
 		DistributedCache.addCacheFile(new URI("/bb/data"), conf) ;
@@ -316,7 +330,22 @@ public class BranchAndBound {
 		ret.setOutputValueClass(Text.class);
 		return ret ;
 	}
-	
+*/
+	static Job getJob(String input, String output, int iteration ) throws Exception{
+        Configuration conf = new Configuration() ;
+		DistributedCache.addCacheFile(new URI("/bb/data"), conf) ;
+		Job ret = new Job(conf, "BranchAndBound_iteration" + iteration ) ;
+		ret.setJarByClass(BranchAndBound.class) ;
+        ret.setMapperClass(BBMapper1.class) ;
+		ret.setReducerClass(BBReducer.class) ;
+		FileInputFormat.setInputPaths(ret, new Path(input)) ;
+		FileOutputFormat.setOutputPath(ret, new Path(output)) ;
+		ret.setOutputKeyClass(IntWritable.class);
+		ret.setOutputValueClass(Text.class);
+		return ret ;
+	}
+
+    
 	public static void main(String[] args) throws Exception {
 		/*Configuration conf = new Configuration();
 		String[] otherArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
@@ -342,7 +371,7 @@ public class BranchAndBound {
 			System.exit(2) ;
 		}
 		String prev_output = inputargs[0] ;
-		for( int i = 1 ; i <= n ; i++ ) {
+/*		for( int i = 1 ; i <= n ; i++ ) {
 			for( int j = 0 ; j < 2 ; j++ ) {
 				String input = prev_output ;
 				String output = inputargs[1] + "/iteration" + i + "_" + j ;
@@ -351,7 +380,14 @@ public class BranchAndBound {
 				prev_output = output;
 			}
 		}
-		
+*/
+        for( int i = 1 ; i <= n ; i++ ) {
+            String input = prev_output ;
+            String output = inputargs[1] + "/iteration" + i ;
+            Job job = getJob(input, output, i) ;
+            job.waitForCompletion(true) ; // if failed ????
+            prev_output = output;
+		}
 		
 		int b[] = new int[3];
 		b[0] = 1;
