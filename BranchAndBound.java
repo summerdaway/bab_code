@@ -48,7 +48,7 @@ public class BranchAndBound {
 		static int value2[][][][];
 		static int allMin[][];
 		static int rowMin[][][];
-		List<String> valueList ;
+		static List<String> valueList ;
         static final int maxListSize = 10000000 ;
         static int minGlobalUpperBound = 2000000000 ;
         
@@ -115,7 +115,7 @@ public class BranchAndBound {
 					}
 				}
 			}
-            List<String> valueList = new ArrayList<String>();
+            valueList = new ArrayList<String>();
 			Counter cnt = context.getCounter("MyCounter", "nSetup");
 			cnt.increment(1);
 		}
@@ -249,11 +249,7 @@ public class BranchAndBound {
 //				context.write(new IntWritable(strID), new Text(strInfo));
 				String strInfo = getInfo(a);
                 if( valueList.size() == maxListSize ) {
-                    Counter cnt = context.getCounter("MyCounter", "listNum");
-                    int output_key = (int)cnt.getValue() ;
-                    for( String value: valueList ) {
-                        context.write( new IntWritable(output_key) , new Text(value) ) ;
-                    }
+                    outputList(context) ;
                     valueList = new ArrayList<String>() ;
                 }
                 valueList.add(strInfo) ;
@@ -262,8 +258,24 @@ public class BranchAndBound {
 			}
 		}
         
+        public static void outputList(Context context) throws IOException, InterruptedException {
+            Counter cnt = context.getCounter("MyCounter", "listNum");
+            int outputKey = (int)cnt.getValue() ;
+            for( String outputValue: valueList ) {
+                StringTokenizer itr = new StringTokenizer(outputValue);
+                int a[] = new int[3] ;
+                for( int i = 0 ; i < 3 ; i++ ) {
+                    a[i] = Integer.parseInt(itr.nextToken()) ;
+                }
+                int lowerBound = a[1] , upperBound = a[2] ;
+                if( lowerBound < minGlobalUpperBound || upperBound == minGlobalUpperBound ) {
+                    context.write( new IntWritable(outputKey) , new Text(outputValue) ) ;
+                }
+            }
+        }
+        
         public void cleanup(Context context) throws IOException, InterruptedException {
-            
+            outputList(context) ;
         }
 	}
 /*
@@ -363,7 +375,7 @@ public class BranchAndBound {
 		FileInputFormat.addInputPath(job, new Path(otherArgs[0]));
 		FileOutputFormat.setOutputPath(job, new Path(otherArgs[1]));
 		System.exit(job.waitForCompletion(true) ? 0 : 1);*/
-		int n = 20 ;
+		int n = 3 ;
 		String[] inputargs = new GenericOptionsParser(
 					new Configuration(), args).getRemainingArgs();
 		if( inputargs.length != 2 ) {
