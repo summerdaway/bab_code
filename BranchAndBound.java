@@ -24,7 +24,7 @@ import java.util.Scanner;
 import java.util.StringTokenizer;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.mapred.JobConf ;
+import org.apache.hadoop.mapred.* ;
 import org.apache.hadoop.filecache.DistributedCache;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.*;
@@ -36,51 +36,61 @@ import org.apache.hadoop.mapreduce.Counter ;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.GenericOptionsParser;
+import org.apache.hadoop.mapred.lib.ChainMapper ;
 
 public class BranchAndBound {
+    static double eps = 1e-7 ;
 	
 	public static class BBMapper1 extends Mapper <Object, Text, IntWritable, Text> {
 		
 		static int n = 0;
 		static int c[];
 		static int p[];
-		static int value1[][];
-		static int value2[][][][];
-		static int allMin[][];
-		static int rowMin[][][];
+		static double value1[][];
+        static double minValue1[] ;
+		static double value2[][][][];
+		static double allMin[][];
+		static double rowMin[][][];
+		static double deeMin[][][][];
 		static List<String> valueList ;
-        static final int maxListSize = 10000000 ;
-        static int minGlobalUpperBound = 2000000000 ;
+        static final int maxListSize = 100000 ;
+        static final double Infinity = 1e99 ;
+        static double minGlobalUpperBound = Infinity ;
         
 		public void setup(Context context) throws IOException, InterruptedException {
-			Configuration conf = context.getConfiguration() ;
+			Configuration conf = context.getConfiguration();
 			// handle exception ?????
-			Path inputdata = DistributedCache.getLocalCacheFiles(conf)[0] ;
-			Scanner input = new Scanner(new BufferedReader(new FileReader(inputdata.toString()))) ;
-			n = input.nextInt() ;
-			c = new int[n] ;
-			value1 = new int[n][] ;
+			Path inputdata = DistributedCache.getLocalCacheFiles(conf)[0];
+			Scanner input = new Scanner(new BufferedReader(new FileReader(inputdata.toString())));
+			n = input.nextInt();
+			c = new int[n];
+			value1 = new double[n][];
+            minValue1 = new double[n];
+            for( int i = 0 ; i < n ; i++ ) {
+                minValue1[i] = Infinity ;
+            }
 			for( int i = 0 ; i < n ; i++ ) {
 				c[i] = input.nextInt() ;
-				value1[i] = new int[c[i]] ;
+				value1[i] = new double[c[i]];
 				for( int j = 0 ; j < c[i] ; j++ ) {
-					value1[i][j] = input.nextInt() ;
+					value1[i][j] = input.nextDouble();
+                    minValue1[i] = Math.min(minValue1[i], value1[i][j]);
 				}
 			}
-			value2 = new int[n][n][][] ;
+			value2 = new double[n][n][][] ;
 			for( int i = 0 ; i < n ; i++ ) {
 				for( int j = i + 1 ; j < n ; j++ ) {
-					value2[i][j] = new int[c[i]][c[j]] ;
+					value2[i][j] = new double[c[i]][c[j]] ;
 					for( int x = 0 ; x < c[i] ; x++ ) {
 						for( int y = 0 ; y < c[j] ; y++ ) {
-							value2[i][j][x][y] = input.nextInt() ;
+							value2[i][j][x][y] = input.nextDouble() ;
 						}
 					}
 				}
 			}
 			for( int i = 0 ; i < n ; i++ ) {
 				for( int j = 0 ; j < i ; j++ ) {
-					value2[i][j] = new int[c[i]][c[j]] ;
+					value2[i][j] = new double[c[i]][c[j]] ;
 					for( int x = 0 ; x < c[i] ; x++ ) {
 						for( int y = 0 ; y < c[j] ; y++ ) {
 							value2[i][j][x][y] = value2[j][i][y][x] ;
@@ -97,12 +107,12 @@ public class BranchAndBound {
 					p[i] = j;
 				}
 			}
-			allMin = new int[n][n];
-			rowMin = new int[n][n][];
+			allMin = new double[n][n];
+			rowMin = new double[n][n][];
 			for (int i = 0; i < n; i ++) {
 				for (int j = 0; j < n; j ++)
 				if (i != j) {
-					rowMin[i][j] = new int[c[i]];
+					rowMin[i][j] = new double[c[i]];
 					for (int k = 0; k < c[i]; k ++) {
 						rowMin[i][j][k] = value2[i][j][k][0];
 						for (int l = 0; l < c[j]; l ++)
@@ -115,12 +125,29 @@ public class BranchAndBound {
 					}
 				}
 			}
+			deeMin = new double[n][][][];
+			for (int i = 0; i < n; i ++) {
+				deeMin[i] = new double[c[i]][c[i]][n];
+				for (int x = 0; x < c[i]; x ++) {
+					for (int y = 0; y < c[i]; y ++)
+					if (x != y) {
+						for (int j = 0; j < n; j ++)
+						if (i != j) {
+							deeMin[i][x][y][j] = Infinity;
+							for (int k = 0; k < c[j]; k ++)
+							if (value2[i][j][x][k] - value2[i][j][y][k] < deeMin[i][x][y][j]) {
+								deeMin[i][x][y][j] = value2[i][j][x][k] - value2[i][j][y][k];
+							}
+						}
+					}
+				}
+			}
             valueList = new ArrayList<String>();
 			Counter cnt = context.getCounter("MyCounter", "nSetup");
 			cnt.increment(1);
 		}
 		
-		public static int getLowerValue(int i, int x, int j, int y) {
+		public static double getLowerValue(int i, int x, int j, int y) {
 			if ((x == -1) && (y == -1)) {
 				return allMin[i][j];
 			} else if (x == -1) {
@@ -132,30 +159,41 @@ public class BranchAndBound {
 			}
 		}
 		
-		public static int calcLowerBound(int a[], int k, int o) {
-		/*	int result = a[1];
-			for (int i = 0; i < n; i ++)
-			if (i != k) {
-				result -= getLowerValue(i, a[i + 3], k, -1);
-				result += getLowerValue(i, a[i + 3], k, o);
+		public static boolean checkDEE(int i, int x, int b[]) {
+			for (int y = 0; y < c[i]; y ++)
+			if (x != y) {
+				double sum = 0;
+				for (int j = 0; j < n; j ++) {
+					if (b[j] == -1) {
+						sum += deeMin[i][x][y][j];
+					} else {
+						sum += value2[i][j][x][b[j]] - value2[i][j][y][b[j]];
+					}
+				}
+				if (sum > eps) return true;
 			}
-			result -= value1[k][p[k]];
-			result += value1[k][o];*/
-			int result = 0;
-			a[k + 3] = o;
+			return false;
+		}
+		
+		public static double calcLowerBound(double a[], int b[], int k, int o) {
+			if (checkDEE(k, o, b)) {
+				return Infinity;
+			}
+			double result = 0.0;
+			b[k] = o;
 			for (int i = 0; i < n; i ++)
-			if (a[i + 3] != -1) {
-				result += value1[i][a[i + 3]];
-				for (int j = 0; j < i; j ++)
-				if (a[j + 3] != -1) {
-					result += value2[i][j][a[i + 3]][a[j + 3]];
+			if (b[i] != -1) {
+				result += value1[i][b[i]];
+				for (int j = 0; j < i; j ++) {
+                    result += getLowerValue(i, b[i], j, b[j]);
+				//	result += value2[i][j][b[i]][b[j]];
 				}
 			} else {
-				int minValue = 2000000000;
+				double minValue = Infinity;
 				for (int v = 0; v < c[i]; v ++) {
-					int sum = value1[i][v];
+					double sum = value1[i][v];
 					for (int j = 0; j < i; j ++) {
-						sum += getLowerValue(i, v, j, a[j + 3]);
+						sum += getLowerValue(i, v, j, b[j]);
 					}
 					if (sum < minValue) {
 						minValue = sum;
@@ -163,56 +201,88 @@ public class BranchAndBound {
 				}
 				result += minValue;
 			}
-			a[k + 3] = -1;
+			b[k] = -1;
 			return result;
 		}
 		
-		public static int getUpperValue(int i, int x, int j, int y) {
+		public static double getUpperValue(int i, int x, int j, int y) {
 			if (x == -1) x = p[i];
 			if (y == -1) y = p[j];
 			return value2[i][j][x][y];
 		}
 		
-		public static int calcUpperBound(int a[], int k, int o) {
-		/*	int result = a[2];
-			for (int i = 0; i < n; i ++)
-			if (i != k) {
-				result -= getUpperValue(i, a[i + 3], k, -1);
-				result += getUpperValue(i, a[i + 3], k, o);
-			}
-			result -= value1[k][p[k]];
-			result += value1[k][o];*/
-			int result = 0;
-			a[k + 3] = o;
-			int b[] = new int[n];
+		public static double calcUpperBound(double a[], int b[], int k, int o) {
+			double result = 0;
+			b[k] = o;
+			int d[] = new int[n];/*
 			for (int i = 0; i < n; i ++) {
-				b[i] = a[i + 3];
-				if (b[i] == -1) {
-					int minValue = 2000000000;
+				d[i] = b[i];
+				if (d[i] == -1) {
+					double minValue = 1e99;
 					for (int v = 0; v < c[i]; v ++) {
-						int sum = value1[i][v];
+						double sum = value1[i][v];
 						for (int j = 0; j < i; j ++) {
-							sum += value2[i][j][v][b[j]];
+							sum += value2[i][j][v][d[j]];
 						}
 						if (sum < minValue) {
 							minValue = sum;
-							b[i] = v;
+							d[i] = v;
 						}
 					}
 				}
-				result += value1[i][b[i]];
+				result += value1[i][d[i]];
 				for (int j = 0; j < i; j ++) {
-					result += value2[i][j][b[i]][b[j]];
+					result += value2[i][j][d[i]][d[j]];
+				}
+			}*/
+			for (int i = 0; i < n; i ++) {
+				d[i] = (b[i] != -1) ? b[i] : (int)(Math.random() * c[i]);
+			}
+			double sum = 0;
+			for (int i = 0; i < n; i ++) {
+				sum += value1[i][d[i]];
+				for (int j = 0; j < i; j ++) {
+					sum += value2[i][j][d[i]][d[j]];
 				}
 			}
-			a[k + 3] = -1;
-			return result;
+			while (true) {
+				boolean changed = false;
+				for (int i = 0; i < n; i ++)
+				if (b[i] == -1) {
+					sum -= value1[i][d[i]];
+					for (int j = 0; j < n; j ++)
+					if (i != j) {
+						sum -= value2[i][j][d[i]][d[j]];
+					}
+					double min_sum = 1e99;
+					int min_v = -1;
+					for (int v = 0; v < c[i]; v ++) {
+						double temp_sum = sum + value1[i][v];
+						for (int j = 0; j < n; j ++)
+						if (i != j) {
+							temp_sum += value2[i][j][v][d[j]];
+						}
+						if (temp_sum + eps < min_sum) {
+							min_sum = temp_sum;
+							min_v = v;
+						}
+					}
+					sum = min_sum;
+					if (min_v != d[i]) {
+						d[i] = min_v;
+						changed = true;
+					}
+				}
+				if (!changed) break;
+			}
+			b[k] = -1;
+			return sum;
 		}
 		
-		public static String getInfo(int a[]) {
-			String str = "" + a[0];
-			for (int i = 1; i < a.length; i ++) {
-				str = str + " " + a[i];
+		public static String getInfo(double a[], int b[]) {
+			String str = "" + a[0] + " " + a[1] + " " + a[2];
+			for (int i = 0; i < n; i ++) {
+				str = str + " " + b[i];
 			}
 			return str;
 		}
@@ -220,37 +290,44 @@ public class BranchAndBound {
 		public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
 			StringTokenizer itr = new StringTokenizer(value.toString());
 			if (itr.countTokens() != n + 3) return;
-			int a[] = new int[n + 3];
-			for (int i = 0; i < n + 3; i ++) {
-				a[i] = Integer.parseInt(itr.nextToken());
+			double a[] = new double[3];
+			int b[] = new int[n];
+			for (int i = 0; i < 3; i ++) {
+				a[i] = Double.parseDouble(itr.nextToken());
+            }
+			for (int i = 0; i < n; i ++) {
+				b[i] = Integer.parseInt(itr.nextToken());
 			}
 			int k = -1;
 			for (int i = 0; i < n; i ++)
-			if ((a[i + 3] == -1) && ((k == -1) || (c[i] < c[k]))) {
+			if ((b[i] == -1) && ((k == -1) || (c[i] < c[k]))) {
 				k = i;
 			}
 			if (k == -1) return;
-			int globalUpperBound = a[0];
-			int lowerBound[] = new int[c[k]];
-			int upperBound[] = new int[c[k]];
+			double globalUpperBound = a[0];
+			double lowerBound[] = new double[c[k]];
+			double upperBound[] = new double[c[k]];
 			for (int i = 0; i < c[k]; i ++) {
-				lowerBound[i] = calcLowerBound(a, k, i);
-				upperBound[i] = calcUpperBound(a, k, i);
+				lowerBound[i] = calcLowerBound(a, b, k, i);
+				upperBound[i] = calcUpperBound(a, b, k, i);
 				globalUpperBound = Math.min(globalUpperBound, upperBound[i]);
 			}
             minGlobalUpperBound = Math.min( globalUpperBound , minGlobalUpperBound ) ;
 			a[0] = minGlobalUpperBound;
 			for (int i = 0; i < c[k]; i ++)
-			if (lowerBound[i] <= minGlobalUpperBound) {
-				a[k + 3] = i;
+			if (lowerBound[i] < minGlobalUpperBound + eps) {
+				b[k] = i;
 				a[1] = lowerBound[i];
 				a[2] = upperBound[i];
 //				int strID = (int)cnt.getValue() / 10000;
 //				context.write(new IntWritable(strID), new Text(strInfo));
-				String strInfo = getInfo(a);
+				String strInfo = getInfo(a, b);
                 if( valueList.size() == maxListSize ) {
+                    Counter cnt = context.getCounter("MyCounter", "mapListNum");
+                    cnt.increment(1);
                     outputList(context) ;
-                    valueList = new ArrayList<String>() ;
+                    // valueList.clear() ;
+                    //valueList = new ArrayList<String>() ;
                 }
                 valueList.add(strInfo) ;
 				Counter cnt = context.getCounter("MyCounter", "lines");
@@ -259,23 +336,25 @@ public class BranchAndBound {
 		}
         
         public static void outputList(Context context) throws IOException, InterruptedException {
-            Counter cnt = context.getCounter("MyCounter", "listNum");
-            int outputKey = (int)cnt.getValue() ;
             for( String outputValue: valueList ) {
                 StringTokenizer itr = new StringTokenizer(outputValue);
-                int a[] = new int[3] ;
+                double a[] = new double[3] ;
                 for( int i = 0 ; i < 3 ; i++ ) {
-                    a[i] = Integer.parseInt(itr.nextToken()) ;
+                    a[i] = Double.parseDouble(itr.nextToken()) ;
                 }
-                int lowerBound = a[1] , upperBound = a[2] ;
-                if( lowerBound < minGlobalUpperBound || upperBound == minGlobalUpperBound ) {
+                double lowerBound = a[1] , upperBound = a[2] ;
+                if( lowerBound < minGlobalUpperBound + eps || upperBound < minGlobalUpperBound + eps ) {
+                    int outputKey = (int)(Math.random()*37) ;
                     context.write( new IntWritable(outputKey) , new Text(outputValue) ) ;
                 }
             }
+            valueList.clear();
         }
         
         public void cleanup(Context context) throws IOException, InterruptedException {
             outputList(context) ;
+            Counter cnt = context.getCounter("MyCounter", "cleanup");
+            cnt.increment(1);
         }
 	}
 /*
@@ -289,25 +368,56 @@ public class BranchAndBound {
 	}
 */
 	public static class BBReducer extends Reducer<IntWritable, Text, NullWritable, Text> {
-		static final int Infinity = 2000000000;
+		static final double Infinity = 1e99;
+		static List<String> valueList = new ArrayList<String>() ;
+        static final int maxListSize = 1000000 ;
+        static double minGlobalUpperBound = Infinity ;
+        
+        public static void outputList(Context context) throws IOException, InterruptedException {
+            for( String outputValue: valueList ) {
+                StringTokenizer itr = new StringTokenizer(outputValue);
+                double a[] = new double[3] ;
+                for( int i = 0 ; i < 3 ; i++ ) {
+                    a[i] = Double.parseDouble(itr.nextToken()) ;
+                }
+                double lowerBound = a[1] , upperBound = a[2] ;
+                if( lowerBound < minGlobalUpperBound + eps || upperBound < minGlobalUpperBound + eps ) {
+                    Counter cnt = context.getCounter("MyCounter", "nodes");
+                    cnt.increment(1);
+                    context.write( NullWritable.get() , new Text(outputValue) ) ;
+                }
+            }
+            valueList.clear();
+        }
+        
 		public void reduce(IntWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
-			List<String> valueList = new ArrayList<String>();
-			for (Text value : values) {
-				valueList.add(value.toString());
+            for (Text value : values) {
+                if( valueList.size() == maxListSize ) {
+                    outputList(context) ;
+                    //valueList.clear() ;
+                    //valueList = new ArrayList<String>() ;
+                    Counter cnt = context.getCounter("MyCounter", "reduceListNum");
+                    cnt.increment(1);
+                }
+                valueList.add(value.toString()) ;
+				StringTokenizer itr = new StringTokenizer(value.toString());
+                double globalUpperBound = Double.parseDouble(itr.nextToken());
+                minGlobalUpperBound = Math.min( minGlobalUpperBound , globalUpperBound ) ;
 			}
+            outputList(context) ;
 	/*		for (Text value : valueList) {
 				context.write(NullWritable.get(), new Text(value));
 			}*/
-			int minGlobalUpperBound = Infinity;
-			for (String value : valueList) {
-				StringTokenizer itr = new StringTokenizer(value);
+/*			for (Text value : values) {
+				StringTokenizer itr = new StringTokenizer(value.toString());
 				int globalUpperBound = Integer.parseInt(itr.nextToken());
+                minGlobalUpperBound = Math.min( minGlobalUpperBound , globalUpperBound ) ;
 				if (globalUpperBound < minGlobalUpperBound) {
 					minGlobalUpperBound = globalUpperBound;
 				}
-			}
-			for (String value : valueList) {
-				StringTokenizer itr = new StringTokenizer(value);
+			}*/
+/*			for (Text value : values) {
+				StringTokenizer itr = new StringTokenizer(value.toString());
 				int a[] = new int[itr.countTokens()];
 				for (int i = 0; i < a.length; i ++) {
 					a[i] = Integer.parseInt(itr.nextToken());
@@ -321,7 +431,7 @@ public class BranchAndBound {
 					Counter cnt = context.getCounter("MyCounter", "nodes");
 					cnt.increment(1);
 				}
-			}
+			}*/
 		}
 	}
 /*
@@ -375,13 +485,14 @@ public class BranchAndBound {
 		FileInputFormat.addInputPath(job, new Path(otherArgs[0]));
 		FileOutputFormat.setOutputPath(job, new Path(otherArgs[1]));
 		System.exit(job.waitForCompletion(true) ? 0 : 1);*/
-		int n = 3 ;
+		int n = 16 ;
 		String[] inputargs = new GenericOptionsParser(
 					new Configuration(), args).getRemainingArgs();
-		if( inputargs.length != 2 ) {
-			System.err.println("Usage: branchandbound <input> <output_dir>") ;
+		if( inputargs.length != 3 ) {
+			System.err.println("Usage: branchandbound <input> <output_dir> <n>") ;
 			System.exit(2) ;
 		}
+		n = Integer.parseInt(inputargs[2]);
 		String prev_output = inputargs[0] ;
 /*		for( int i = 1 ; i <= n ; i++ ) {
 			for( int j = 0 ; j < 2 ; j++ ) {
@@ -393,27 +504,20 @@ public class BranchAndBound {
 			}
 		}
 */
+        JobConf conf = new JobConf(new Configuration(), BranchAndBound.class) ;
+        conf.setJobName("chain") ;
+        conf.setInputFormat(TextInputFormat.class) ;
+        conf.setOutputFormat(TextOutputFormat.class) ;
+        
+        JobConf a = new JobConf( false ) ;
+        ChainMapper.addMapper(conf, BBMapper1.class , Object.class , Text.class, IntWritable.class, Text.class , false , a ) ;
+        
         for( int i = 1 ; i <= n ; i++ ) {
             String input = prev_output ;
             String output = inputargs[1] + "/iteration" + i ;
             Job job = getJob(input, output, i) ;
             job.waitForCompletion(true) ; // if failed ????
             prev_output = output;
-		}
-		
-		int b[] = new int[3];
-		b[0] = 1;
-		b[1] = 2;
-		b[2] = 3;
-		String s = BBMapper1.getInfo(b);
-		System.out.println(s);
-		Text value = new Text(s);
-		StringTokenizer itr = new StringTokenizer(value.toString());
-		if (itr.countTokens() != 3) return;
-		int a[] = new int[3];
-		for (int i = 0; i < 3; i ++) {
-			a[i] = Integer.parseInt(itr.nextToken());
-			System.out.println(a[i]);
 		}
 	}
 }
